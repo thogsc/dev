@@ -17,7 +17,7 @@ public class PlaneryBmdExport
 
     // 02:05 und 03:05 UTC → läuft dann 04:05 in AT (DST-sicher, wir skippen die falsche Stunde)
     [Function("PlaneryBmdExport")]
-    public async Task Run([TimerTrigger("0 5 2,3 * * *")] TimerInfo timer)
+    public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timer)
     {
         var viennaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Vienna");
         var viennaNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, viennaTz);
@@ -136,3 +136,4 @@ public class PlaneryBmdExport
         => Environment.GetEnvironmentVariable(key)
            ?? throw new Exception($"Missing app setting: {key}");
 }
+
