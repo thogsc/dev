@@ -15,19 +15,10 @@ public class PlaneryBmdExport
         _log = loggerFactory.CreateLogger<PlaneryBmdExport>();
     }
 
-    // 02:05 und 03:05 UTC → läuft dann 04:05 in AT (DST-sicher, wir skippen die falsche Stunde)
+    // Läuft 04:05 Europe/Vienna (im Portal bei App Settings: WEBSITE_TIME_ZONE = Europe/Vienna setzen)
     [Function("PlaneryBmdExport")]
-    public async Task Run([TimerTrigger("0 5 2,3 * * *")] TimerInfo timer)
+    public async Task Run([TimerTrigger("0 5 4 * * *")] TimerInfo timer)
     {
-        var viennaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Vienna");
-        var viennaNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, viennaTz);
-
-        if (viennaNow.Hour != 4)
-        {
-            _log.LogInformation("Skip. Vienna time is {time}", viennaNow);
-            return;
-        }
-
         var baseUrl = Env("PLANERY_BASE_URL");            // https://app.planery.io/api
         var username = Env("PLANERY_USERNAME");
         var password = Env("PLANERY_PASSWORD");
@@ -38,14 +29,32 @@ public class PlaneryBmdExport
         var prefix = (Env("BLOB_PREFIX") ?? "").Trim('/');
         if (!string.IsNullOrWhiteSpace(prefix)) prefix += "/";
 
-        var mode = (Environment.GetEnvironmentVariable("EXPORT_MODE") ?? "PREVIOUS_MONTH").ToUpperInvariant();
-        (DateTime startLocal, DateTime endLocal) = GetRange(viennaNow.DateTime, mode);
+        // WICHTIG: viennaNow muss existieren
+        var viennaNow = DateTime.Now;
 
-        // Format, das eure API akzeptiert (wie in Make erfolgreich)
+        // 2 Dateien: CURRENT + PREVIOUS (im selben Ordner), benannt "MMM yyyy.csv"
+        await ExportMonthToBlob(baseUrl, username, password, companyId, blobAccountUrl, containerName, prefix, viennaNow, "CURRENT_MONTH");
+        await ExportMonthToBlob(baseUrl, username, password, companyId, blobAccountUrl, containerName, prefix, viennaNow, "PREVIOUS_MONTH");
+    }
+
+    private async Task ExportMonthToBlob(
+        string baseUrl,
+        string username,
+        string password,
+        string companyId,
+        string blobAccountUrl,
+        string containerName,
+        string prefix,
+        DateTime viennaNow,
+        string mode)
+    {
+        (DateTime startLocal, DateTime endLocal) = GetRange(viennaNow, mode);
+
+        // Planery akzeptiert das Format (wie bei dir in Make)
         var startStr = startLocal.ToString("yyyy-MM-dd HH:mm:ss");
         var endStr = endLocal.ToString("yyyy-MM-dd HH:mm:ss");
 
-        _log.LogInformation("Export range Vienna: {start} - {end}", startStr, endStr);
+        _log.LogInformation("Export mode={mode}. Range Vienna: {start} - {end}", mode, startStr, endStr);
 
         var token = await GetToken(baseUrl, username, password);
 
@@ -61,23 +70,25 @@ public class PlaneryBmdExport
 
         if (!resp.IsSuccessStatusCode)
         {
-            _log.LogError("Planery export failed. Status={status}. Body={body}", (int)resp.StatusCode, body);
+            _log.LogError("Planery export failed. Mode={mode}. Status={status}. Body={body}", mode, (int)resp.StatusCode, body);
             resp.EnsureSuccessStatusCode();
         }
 
         // Response: { "data": { "name": "...csv", "data": "<base64>" } }
         using var doc = JsonDocument.Parse(body);
         var dataObj = doc.RootElement.GetProperty("data");
-        var fileName = dataObj.GetProperty("name").GetString() ?? "export.csv";
         var base64 = dataObj.GetProperty("data").GetString();
 
         if (string.IsNullOrWhiteSpace(base64))
-            throw new Exception("Response 'data.data' (base64) is empty.");
+            throw new Exception($"Response 'data.data' (base64) is empty. Mode={mode}");
 
         var bytes = Convert.FromBase64String(base64);
 
+        // Filename: "feb 2026.csv" / "jan 2026.csv" (immer automatisch passend)
+        var fileName = startLocal.ToString("MMM yyyy").ToLowerInvariant() + ".csv";
         var blobName = $"{prefix}{fileName}";
-        _log.LogInformation("Uploading to {container}/{blob}", containerName, blobName);
+
+        _log.LogInformation("Uploading Mode={mode} to {container}/{blob} ({bytes} bytes)", mode, containerName, blobName, bytes.Length);
 
         var blobService = new BlobServiceClient(new Uri(blobAccountUrl), new DefaultAzureCredential());
         var container = blobService.GetBlobContainerClient(containerName);
@@ -86,7 +97,7 @@ public class PlaneryBmdExport
         using var ms = new MemoryStream(bytes);
         await blob.UploadAsync(ms, overwrite: true);
 
-        _log.LogInformation("Done. Uploaded {bytes} bytes.", bytes.Length);
+        _log.LogInformation("Done. Mode={mode}. Uploaded {bytes} bytes to {blob}", mode, bytes.Length, blobName);
     }
 
     private static async Task<string> GetToken(string baseUrl, string username, string password)
@@ -109,7 +120,9 @@ public class PlaneryBmdExport
 
         using var resp = await _http.SendAsync(req);
         var body = await resp.Content.ReadAsStringAsync();
-        resp.EnsureSuccessStatusCode();
+
+        if (!resp.IsSuccessStatusCode)
+            throw new Exception($"Token request failed. Status={(int)resp.StatusCode}. Body={body}");
 
         using var doc = JsonDocument.Parse(body);
         return doc.RootElement.GetProperty("access_token").GetString()
@@ -118,6 +131,8 @@ public class PlaneryBmdExport
 
     private static (DateTime start, DateTime end) GetRange(DateTime viennaNow, string mode)
     {
+        mode = (mode ?? "PREVIOUS_MONTH").ToUpperInvariant();
+
         if (mode == "CURRENT_MONTH")
         {
             var start = new DateTime(viennaNow.Year, viennaNow.Month, 1, 0, 0, 0);
@@ -136,5 +151,3 @@ public class PlaneryBmdExport
         => Environment.GetEnvironmentVariable(key)
            ?? throw new Exception($"Missing app setting: {key}");
 }
-
-
