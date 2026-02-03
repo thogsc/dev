@@ -17,7 +17,7 @@ public class PlaneryBmdExport
 
     // Läuft 04:05 Europe/Vienna (im Portal bei App Settings: WEBSITE_TIME_ZONE = Europe/Vienna setzen)
     [Function("PlaneryBmdExport")]
-    public async Task Run([TimerTrigger("0 */1 * * * *")] TimerInfo timer)
+    public async Task Run([TimerTrigger("0 5 2,3 * * *")] TimerInfo timer)
     {
         var baseUrl = Env("PLANERY_BASE_URL");            // https://app.planery.io/api
         var username = Env("PLANERY_USERNAME");
@@ -151,4 +151,5 @@ public class PlaneryBmdExport
         => Environment.GetEnvironmentVariable(key)
            ?? throw new Exception($"Missing app setting: {key}");
 }
+
 
